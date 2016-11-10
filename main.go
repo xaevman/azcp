@@ -15,10 +15,12 @@ import (
 
 // config vars
 var (
-    account   string
-    key       string
-    container string
-    glob      string
+    account     string
+    key         string
+    container   string
+    glob        string
+    workerCount int
+    maxRetries  int
 )
 
 var (
@@ -33,7 +35,7 @@ var (
 func main() {
     parseArgs()
 
-    for i := 0; i < 5; i++ {
+    for i := 0; i < workerCount; i++ {
         go runWorker()
     }
 
@@ -105,8 +107,7 @@ func upload(path string) {
 
     reader := bufio.NewReaderSize(f, 64*1024)
 
-    // 3 retries
-    for i := 0; i < 3; i++ {
+    for i := 0; i < maxRetries; i++ {
         exists, err = srv.BlobExists(container, path)
         if err != nil {
             continue
@@ -150,5 +151,7 @@ func parseArgs() {
     flag.StringVar(&key, "Key", "", "The secret key to use to authenticate to the Azure storage account.")
     flag.StringVar(&container, "Container", "", "The storage container to upload files to.")
     flag.StringVar(&glob, "Path", "./*", "A path glob specifying which files to copy.")
+    flag.IntVar(&workerCount, "Workers", 5, "Number of parallel uploaders to run.")
+    flag.IntVar(&maxRetries, "MaxRetries", 3, "Number of retries to attempt on upload failure.")
     flag.Parse()
 }
