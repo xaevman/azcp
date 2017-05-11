@@ -246,7 +246,7 @@ func blockUpload(container, targetPath string, f *os.File, buffer []byte) error 
 
     for block := 0; ; block++ {
         c, err := f.Read(buffer)
-        if err != nil {
+        if err != nil || c < 1 {
             break
         }
 
