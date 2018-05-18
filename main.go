@@ -18,13 +18,14 @@ import (
 const (
     simpleBlobMaxSize  = 64 * 1024 * 1024
     blockBlobChunkSize = 4 * 1024 * 1024
+    retryTimeSec       = 10
 )
 
 // config vars
 var (
     account       string
     key           string
-    container     string
+    containerName string
     path          string
     workerCount   int
     maxRetries    int
@@ -38,7 +39,8 @@ var (
     fileCount    int
     errCount     int32
     successCount int32
-    srv          storage.BlobStorageClient
+    container    *storage.Container
+    svc          storage.BlobStorageClient
     whitelist    = make([]string, 0)
     wg           sync.WaitGroup
 )
@@ -51,21 +53,7 @@ func main() {
         go runWorker()
     }
 
-    fmt.Printf("Initialzing Azure...\n")
-    cli, err := storage.NewBasicClient(account, key)
-    if err != nil {
-        panic(err)
-    }
-
-    srv = cli.GetBlobService()
-
-    _, err = srv.CreateContainerIfNotExists(
-        container,
-        storage.ContainerAccessTypePrivate,
-    )
-    if err != nil {
-        panic(err)
-    }
+    initAzure()
 
     if len(whitelistPath) > 0 {
         f, err := os.Open(whitelistPath)
@@ -94,7 +82,7 @@ func main() {
     }
 
     fmt.Printf("Enumerating files...\n")
-    err = filepath.Walk(path, func(filePath string, info os.FileInfo, err error) error {
+    err := filepath.Walk(path, func(filePath string, info os.FileInfo, err error) error {
         if err != nil {
             fmt.Println(err)
             return nil
@@ -136,6 +124,30 @@ func main() {
         successCount,
         errCount,
     )
+}
+
+func initAzure() {
+    cli, err := storage.NewBasicClient(account, key)
+    if err != nil {
+        panic(err)
+    }
+
+    for i := 0; i < maxRetries; i++ {
+        fmt.Printf("Initialzing Azure (attempt %d)...\n", i+1)
+
+        svc = cli.GetBlobService()
+
+        container = svc.GetContainerReference(containerName)
+        if container != nil {
+            break
+        }
+
+        <-time.After(retryTimeSec * time.Second)
+    }
+
+    if container == nil {
+        panic(fmt.Errorf("Error getting container reference for %s", containerName))
+    }
 }
 
 func isBlacklisted(filePath string) bool {
@@ -227,20 +239,29 @@ func upload(filePath string, buffer []byte) {
     atomic.AddInt32(&successCount, 1)
 }
 
-func simpleUpload(container, targetPath string, f *os.File, size int64) error {
-    fmt.Printf("CREATE :: SIMPLE :: %s/%s\n", container, targetPath)
-
+func simpleUpload(container *storage.Container, targetPath string, f *os.File, size int64) error {
     reader := bufio.NewReaderSize(f, 64*1024)
-    return srv.CreateBlockBlobFromReader(container, targetPath, uint64(size), reader, nil)
+
+    var err error
+    for i := 0; i < maxRetries; i++ {
+        fmt.Printf("CREATE :: SIMPLE :: Attempt %d :: %s/%s\n", i+1, containerName, targetPath)
+
+        blob := container.GetBlobReference(targetPath)
+        err = blob.CreateBlockBlobFromReader(reader, nil)
+        if err == nil {
+            break
+        }
+
+        <-time.After(retryTimeSec * time.Second)
+    }
+
+    return err
 }
 
-func blockUpload(container, targetPath string, f *os.File, buffer []byte) error {
-    fmt.Printf("CREATE :: BLOCK :: %s/%s\n", container, targetPath)
+func blockUpload(container *storage.Container, targetPath string, f *os.File, buffer []byte) error {
+    fmt.Printf("CREATE :: BLOCK :: %s/%s\n", containerName, targetPath)
 
-    err := srv.CreateBlockBlob(container, targetPath)
-    if err != nil {
-        return err
-    }
+    blob := container.GetBlobReference(targetPath)
 
     blockList := make([]storage.Block, 0)
 
@@ -256,12 +277,12 @@ func blockUpload(container, targetPath string, f *os.File, buffer []byte) error 
         for i := 0; i < maxRetries; i++ {
             fmt.Printf("\tPutBlock :: %s (id %s, count %d, retry %d)\n", targetPath, b64Id, c, i)
 
-            err = srv.PutBlock(container, targetPath, b64Id, buffer[:c])
+            err = blob.PutBlock(b64Id, buffer[:c], nil)
             if err == nil {
                 break
             }
 
-            <-time.After(1 * time.Second)
+            <-time.After(retryTimeSec * time.Second)
         }
 
         if err != nil {
@@ -274,22 +295,34 @@ func blockUpload(container, targetPath string, f *os.File, buffer []byte) error 
         })
     }
 
-    return srv.PutBlockList(container, targetPath, blockList)
+    var err error
+    for i := 0; i < maxRetries; i++ {
+        err = blob.PutBlockList(blockList, nil)
+        if err == nil {
+            break
+        }
+
+        <-time.After(retryTimeSec * time.Second)
+    }
+
+    return err
 }
 
-func shouldUpload(container, targetPath string, size int64) bool {
-    props, err := srv.GetBlobProperties(container, targetPath)
+func shouldUpload(container *storage.Container, targetPath string, size int64) bool {
+    blob := container.GetBlobReference(targetPath)
+
+    err := blob.GetProperties(nil)
     if err != nil {
-        fmt.Printf("UPLOAD :: %s/%s :: %v\n", container, targetPath, err)
+        fmt.Printf("UPLOAD :: %s/%s :: %v\n", containerName, targetPath, err)
         return true
     }
 
-    if props.ContentLength != size {
+    if blob.Properties.ContentLength != size {
         fmt.Printf(
             "UPLOAD :: %s/%s :: Size mismatch (%d != %d)\n",
-            container,
+            containerName,
             targetPath,
-            props.ContentLength,
+            blob.Properties.ContentLength,
             size,
         )
         return true
@@ -307,7 +340,7 @@ func reportError(filePath string, err error) {
 func parseArgs() {
     flag.StringVar(&account, "Account", "", "The Azure storage account to use.")
     flag.StringVar(&key, "Key", "", "The secret key to use to authenticate to the Azure storage account.")
-    flag.StringVar(&container, "Container", "", "The storage container to upload files to.")
+    flag.StringVar(&containerName, "Container", "", "The storage container to upload files to.")
     flag.StringVar(&path, "Path", ".", "The path to the directory of files to upload.")
     flag.IntVar(&workerCount, "Workers", 5, "Number of parallel uploaders to run.")
     flag.IntVar(&maxRetries, "MaxRetries", 3, "Number of retries to attempt on upload failure.")
