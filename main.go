@@ -314,7 +314,12 @@ func shouldUpload(container *storage.Container, targetPath string, size int64) b
 
 	err := blob.GetProperties(nil)
 	if err != nil {
-		fmt.Printf("UPLOAD :: %s/%s :: %v\n", containerName, targetPath, err)
+		azErr, ok := err.(storage.AzureStorageServiceError)
+		if ok && azErr.StatusCode == 404 {
+			fmt.Printf("UPLOAD :: %s/%s :: NEW\n", containerName, targetPath)
+		} else {
+			fmt.Printf("UPLOAD :: %s/%s :: %v\n", containerName, targetPath, err)
+		}
 		return true
 	}
 
