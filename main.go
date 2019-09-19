@@ -125,6 +125,8 @@ func main() {
 		successCount,
 		errCount,
 	)
+
+	os.Exit(int(errCount))
 }
 
 func initAzure() {
