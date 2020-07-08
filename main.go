@@ -30,19 +30,19 @@ var (
 	forceOverwrite bool
 	workerCount    int
 	maxRetries     int
-	whitelistPath  string
-	blacklistPath  string
+	allowlistPath  string
+	denylistPath   string
 )
 
 var (
-	blacklist    = make([]string, 0)
+	allowlist    = make([]string, 0)
+	denylist     = make([]string, 0)
 	workChan     = make(chan string, 0)
 	fileCount    int
 	errCount     int32
 	successCount int32
 	container    *storage.Container
 	svc          storage.BlobStorageClient
-	whitelist    = make([]string, 0)
 	wg           sync.WaitGroup
 )
 
@@ -56,8 +56,8 @@ func main() {
 
 	initAzure()
 
-	if len(whitelistPath) > 0 {
-		f, err := os.Open(whitelistPath)
+	if len(allowlistPath) > 0 {
+		f, err := os.Open(allowlistPath)
 		if err != nil {
 			panic(err)
 		}
@@ -65,12 +65,12 @@ func main() {
 
 		scanner := bufio.NewScanner(f)
 		for scanner.Scan() {
-			whitelist = append(whitelist, strings.TrimSpace(scanner.Text()))
+			allowlist = append(allowlist, strings.TrimSpace(scanner.Text()))
 		}
 	}
 
-	if len(blacklistPath) > 0 {
-		f, err := os.Open(blacklistPath)
+	if len(denylistPath) > 0 {
+		f, err := os.Open(denylistPath)
 		if err != nil {
 			panic(err)
 		}
@@ -78,7 +78,7 @@ func main() {
 
 		scanner := bufio.NewScanner(f)
 		for scanner.Scan() {
-			blacklist = append(blacklist, strings.TrimSpace(scanner.Text()))
+			denylist = append(denylist, strings.TrimSpace(scanner.Text()))
 		}
 	}
 
@@ -94,12 +94,12 @@ func main() {
 			return nil
 		}
 
-		if isBlacklisted(filePath) {
-			fmt.Printf("SKIP :: %s: Blacklisted\n", filePath)
+		if isdenylisted(filePath) {
+			fmt.Printf("SKIP :: %s: denylisted\n", filePath)
 			return nil
 		}
 
-		if !isWhitelisted(filePath) {
+		if !isallowlisted(filePath) {
 			fmt.Printf("SKIP :: %s: Unknown\n", filePath)
 			return nil
 		}
@@ -153,9 +153,9 @@ func initAzure() {
 	}
 }
 
-func isBlacklisted(filePath string) bool {
-	for i := range blacklist {
-		if strings.Contains(filePath, blacklist[i]) {
+func isdenylisted(filePath string) bool {
+	for i := range denylist {
+		if strings.Contains(filePath, denylist[i]) {
 			return true
 		}
 	}
@@ -163,13 +163,13 @@ func isBlacklisted(filePath string) bool {
 	return false
 }
 
-func isWhitelisted(filePath string) bool {
-	if len(whitelist) < 1 {
+func isallowlisted(filePath string) bool {
+	if len(allowlist) < 1 {
 		return true
 	}
 
-	for i := range whitelist {
-		if strings.Contains(filePath, whitelist[i]) {
+	for i := range allowlist {
+		if strings.Contains(filePath, allowlist[i]) {
 			return true
 		}
 	}
@@ -353,7 +353,7 @@ func parseArgs() {
 	flag.IntVar(&workerCount, "Workers", 5, "Number of parallel uploaders to run.")
 	flag.IntVar(&maxRetries, "MaxRetries", 3, "Number of retries to attempt on upload failure.")
 	flag.BoolVar(&forceOverwrite, "Force", false, "Force azcp to overwrite files that already exist in blob storage")
-	flag.StringVar(&whitelistPath, "Whitelist", "", "Path to a file containing whitelist entries.")
-	flag.StringVar(&blacklistPath, "Blacklist", "", "Path to a file containing blacklist entries.")
+	flag.StringVar(&allowlistPath, "AllowList", "", "Path to a file containing AllowList entries.")
+	flag.StringVar(&denylistPath, "DenyList", "", "Path to a file containing DenyList entries.")
 	flag.Parse()
 }
